@@ -38,8 +38,6 @@ def retrieve_url(url):
 
         if ":" in hostport:
             host, p = hostport.rsplit(":", 1)
-            if not host:
-                return None
             try:
                 port = int(p)
             except ValueError:
@@ -47,6 +45,11 @@ def retrieve_url(url):
         else:
             host = hostport
             port = default_port
+
+        try:
+            host = host.encode("idna").decode("ascii")
+        except Exception:
+            return None
 
         if not path.startswith("/"):
             path = "/" + path
@@ -102,7 +105,6 @@ def retrieve_url(url):
             if ":" in line:
                 k, v = line.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
-
         return status, headers
 
     def read_chunked(s, leftover):
@@ -137,12 +139,6 @@ def retrieve_url(url):
                 return None
 
             if size == 0:
-                # consume trailers (optional)
-                while b"\r\n\r\n" not in buf:
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        break
-                    buf += chunk
                 return body
 
             while len(buf) < size + 2:
@@ -152,16 +148,18 @@ def retrieve_url(url):
                 buf += chunk
 
             body += buf[:size]
-            buf = buf[size + 2:]  # skip data + CRLF
+            buf = buf[size + 2:]
 
     def read_body(s, headers, leftover):
         te = headers.get("transfer-encoding", "").lower()
         cl = headers.get("content-length", "")
+        ce = headers.get("content-encoding", "").lower()
 
         if "chunked" in te:
-            return read_chunked(s, leftover)
-
-        if cl:
+            body = read_chunked(s, leftover)
+            if body is None:
+                return None
+        elif cl:
             try:
                 n = int(cl)
             except ValueError:
@@ -171,15 +169,20 @@ def retrieve_url(url):
                 body += read_exact(s, n - len(body))
             if len(body) != n:
                 return None
-            return body
+        else:
+            body = leftover
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
 
-        # otherwise read until close
-        body = leftover
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            body += chunk
+        if ce == "gzip":
+            try:
+                body = gzip.decompress(body)
+            except Exception:
+                return None
+
         return body
 
     def resolve_redirect(current_url, location):
@@ -194,7 +197,6 @@ def retrieve_url(url):
         if not parsed:
             return None
         scheme, host, port, cur_path = parsed
-
         default_port = 80 if scheme == "http" else 443
         hostpart = host if port == default_port else "{}:{}".format(host, port)
 
@@ -224,7 +226,8 @@ def retrieve_url(url):
                 "GET {} HTTP/1.1\r\n"
                 "Host: {}\r\n"
                 "Connection: close\r\n"
-                "User-Agent: None\r\n"
+                "User-Agent: curl/7.0\r\n"
+                "Accept: */*\r\n"
                 "\r\n"
             ).format(path, host_header).encode("ascii", errors="ignore")
 
@@ -266,8 +269,7 @@ def retrieve_url(url):
                 s.close()
                 return body
 
-            except Exception as e:
-                logging.debug("fetch error: %r", e)
+            except Exception:
                 try:
                     if s:
                         s.close()
@@ -277,15 +279,7 @@ def retrieve_url(url):
 
         return None
 
-    first = fetch_once(url)
-    if first is None:
-        return None
-    second = fetch_once(url)
-    if second is None:
-        return None
-    if first != second:
-        return None
-    return first
+    return fetch_once(url)
 
 if __name__ == "__main__":
     sys.stdout.buffer.write(retrieve_url(sys.argv[1]))
