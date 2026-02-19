@@ -38,6 +38,8 @@ def retrieve_url(url):
 
         if ":" in hostport:
             host, p = hostport.rsplit(":", 1)
+            if not host:
+                return None
             try:
                 port = int(p)
             except ValueError:
@@ -226,8 +228,7 @@ def retrieve_url(url):
                 "GET {} HTTP/1.1\r\n"
                 "Host: {}\r\n"
                 "Connection: close\r\n"
-                "User-Agent: curl/7.0\r\n"
-                "Accept: */*\r\n"
+                "User-Agent: None\r\n"
                 "\r\n"
             ).format(path, host_header).encode("ascii", errors="ignore")
 
@@ -269,7 +270,8 @@ def retrieve_url(url):
                 s.close()
                 return body
 
-            except Exception:
+            except Exception as e:
+                logging.debug("fetch error: %r", e)
                 try:
                     if s:
                         s.close()
@@ -279,7 +281,15 @@ def retrieve_url(url):
 
         return None
 
-    return fetch_once(url)
+    first = fetch_once(url)
+    if first is None:
+        return None
+    second = fetch_once(url)
+    if second is None:
+        return None
+    if first != second:
+        return None
+    return first
 
 if __name__ == "__main__":
     sys.stdout.buffer.write(retrieve_url(sys.argv[1]))
